@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: nba-api-server
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:8080
+    envVars:
+      - key: PORT
+        value: "8080"
