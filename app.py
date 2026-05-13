@@ -8,7 +8,7 @@ CORS(app)
 
 # Ρυθμίσεις για το NBA API Free Data (RapidAPI)
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "9bd9db0ebfmsh2dcf7ca35b912e0p13458cjsn314474139704")
-RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "nba-api-free-data.p.rapidapi.com")
+RAPIDAPI_HOST = "nba-api-free-data.p.rapidapi.com"
 BASE_URL = f"https://{RAPIDAPI_HOST}"
 HEADERS = {
     "x-rapidapi-host": RAPIDAPI_HOST,
@@ -39,51 +39,84 @@ def home():
         ]
     })
 
-# ------------------------------------------------------------
-# Οι δικές μας "έξυπνες" διευθύνσεις που θα καλεί το Lovable
-# ------------------------------------------------------------
+# -----------------------------------------------
+# Τα δικά μας endpoints που θα καλεί το Lovable
+# -----------------------------------------------
 
 @app.route('/api/players')
 def search_players():
     search = request.args.get('search', 'LeBron')
-    # Endpoint: Player/ All List (συνήθως /players)
-    data = safe_get("/players", {"search": search})
+
+    # Το API έχει endpoint /nba-player-list?teamid=...
+    # Για αναζήτηση με όνομα, παίρνουμε όλους τους παίκτες και φιλτράρουμε
+    # (Το API μπορεί να υποστηρίζει και αναζήτηση με όνομα, δοκιμάζουμε)
+    
+    # Πρώτη προσπάθεια: μήπως υπάρχει endpoint αναζήτησης
+    data = safe_get("/nba-player-list", {"name": search})
+    if "error" in data:
+        # Δεύτερη προσπάθεια: αν δεν δουλεύει με name, παίρνουμε όλους
+        data = safe_get("/nba-player-list", {})
+    
     if "error" in data:
         return jsonify(data), 500
 
-    # Το API επιστρέφει τα δεδομένα μέσα σε ένα κλειδί (π.χ. "response" ή "data")
-    players_list = data.get("response") or data.get("data") or data.get("results") or []
+    # Το API επιστρέφει τα δεδομένα μέσα σε διάφορα κλειδιά
+    players_list = data.get("response") or data.get("data") or data.get("results") or data or []
+    
+    # Αν είναι dict αντί για list, το μετατρέπουμε
+    if isinstance(players_list, dict):
+        players_list = list(players_list.values()) if not isinstance(players_list, list) else [players_list]
+    if not isinstance(players_list, list):
+        players_list = []
+
     players = []
     for p in players_list:
+        if not isinstance(p, dict):
+            continue
+        first = p.get("firstname") or p.get("firstName") or p.get("first_name") or ""
+        last = p.get("lastname") or p.get("lastName") or p.get("last_name") or ""
+        full = f"{first} {last}".strip()
+        
+        # Φιλτράρισμα αν δώσαμε search
+        if search and search.lower() not in full.lower():
+            continue
+            
         players.append({
-            "id": p.get("id"),
-            "first_name": p.get("firstname") or p.get("first_name") or "",
-            "last_name": p.get("lastname") or p.get("last_name") or "",
-            "team": (p.get("team") or {}).get("name") or (p.get("team") or {}).get("full_name") or "N/A"
+            "id": p.get("id") or p.get("playerId") or p.get("player_id"),
+            "first_name": first,
+            "last_name": last,
+            "team": (p.get("team") or {}).get("name") or p.get("teamName") or p.get("team_name") or "N/A"
         })
+    
     return jsonify(players[:10])
 
 @app.route('/api/games')
 def get_games():
-    date = request.args.get('date', '2026-05-13')
-    # Endpoint: Scoreboard/ Get by Date (πιθανόν /scoreboard?date=...)
-    data = safe_get("/scoreboard", {"date": date})
-    if "error" in data:
-        # Δοκιμάζουμε και το /games αν το /scoreboard αποτύχει
-        data = safe_get("/games", {"date": date})
+    date = request.args.get('date', '2026-05-14')
+    # Αφαίρεσε τις παύλες για το API (θέλει YYYYMMDD)
+    date_formatted = date.replace('-', '')
+    
+    data = safe_get("/nba-scoreboard-by-date", {"date": date_formatted})
     if "error" in data:
         return jsonify(data), 500
 
-    games_list = data.get("response") or data.get("data") or data.get("results") or []
+    games_list = data.get("response") or data.get("data") or data.get("results") or data or []
+    if isinstance(games_list, dict):
+        games_list = [games_list]
+    if not isinstance(games_list, list):
+        games_list = []
+
     games = []
     for g in games_list:
+        if not isinstance(g, dict):
+            continue
         games.append({
-            "id": g.get("id") or g.get("gameId"),
-            "date": g.get("date") or g.get("gameDate"),
-            "home_team": (g.get("homeTeam") or g.get("home") or {}).get("name") or (g.get("homeTeam") or {}).get("full_name") or "",
-            "away_team": (g.get("awayTeam") or g.get("visitor") or {}).get("name") or (g.get("awayTeam") or {}).get("full_name") or "",
-            "home_score": g.get("homeScore") or (g.get("scores", {}) or {}).get("home", {}).get("total"),
-            "away_score": g.get("awayScore") or (g.get("scores", {}) or {}).get("away", {}).get("total"),
+            "id": g.get("id") or g.get("gameId") or g.get("game_id"),
+            "date": g.get("date") or g.get("gameDate") or date,
+            "home_team": (g.get("homeTeam") or g.get("home") or {}).get("name") or g.get("home_team") or "",
+            "away_team": (g.get("awayTeam") or g.get("away") or {}).get("name") or g.get("away_team") or "",
+            "home_score": g.get("homeScore") or g.get("home_score") or (g.get("scores") or {}).get("home"),
+            "away_score": g.get("awayScore") or g.get("away_score") or (g.get("scores") or {}).get("away"),
             "status": g.get("status") or g.get("gameStatus") or "Scheduled"
         })
     return jsonify(games)
@@ -94,29 +127,30 @@ def get_player_stats():
     if not player_id:
         return jsonify({"error": "player_id is required"}), 400
 
-    # Endpoint: Player/ Gamelog (συχνά /players/gamelog?player=...)
-    data = safe_get("/players/gamelog", {"player": player_id})
-    if "error" in data:
-        # εναλλακτικά δοκιμάζουμε /players/statistics
-        data = safe_get("/players/statistics", {"player": player_id, "per_page": 5})
-
+    data = safe_get("/nba-player-stats", {"playerid": player_id})
     if "error" in data:
         return jsonify(data), 500
 
-    stats_list = data.get("response") or data.get("data") or data.get("results") or []
+    stats_list = data.get("response") or data.get("data") or data.get("results") or data or []
+    if isinstance(stats_list, dict):
+        stats_list = [stats_list]
+    if not isinstance(stats_list, list):
+        stats_list = []
+
     stats = []
     for s in stats_list:
+        if not isinstance(s, dict):
+            continue
         stats.append({
-            "game_id": s.get("game", {}).get("id") if isinstance(s.get("game"), dict) else s.get("gameId"),
-            "date": s.get("date") or (s.get("game", {}) or {}).get("date"),
-            "pts": s.get("points") or s.get("pts"),
-            "reb": s.get("rebounds") or s.get("reb"),
-            "ast": s.get("assists") or s.get("ast"),
-            "stl": s.get("steals") or s.get("stl"),
-            "blk": s.get("blocks") or s.get("blk"),
-            "min": s.get("minutes") or s.get("min")
+            "game_id": s.get("gameId") or s.get("game_id") or (s.get("game") or {}).get("id"),
+            "date": s.get("date") or s.get("gameDate") or (s.get("game") or {}).get("date"),
+            "pts": s.get("points") or s.get("pts") or s.get("PTS"),
+            "reb": s.get("rebounds") or s.get("reb") or s.get("REB"),
+            "ast": s.get("assists") or s.get("ast") or s.get("AST"),
+            "stl": s.get("steals") or s.get("stl") or s.get("STL"),
+            "blk": s.get("blocks") or s.get("blk") or s.get("BLK"),
+            "min": s.get("minutes") or s.get("min") or s.get("MIN")
         })
-    # επιστρέφουμε μέχρι 5 τελευταία
     return jsonify(stats[:5])
 
 @app.route('/api/boxscore')
@@ -125,29 +159,31 @@ def get_boxscore():
     if not game_id:
         return jsonify({"error": "game_id is required"}), 400
 
-    # Μπορούμε να τραβήξουμε τα stats όλων των παικτών για αυτόν τον αγώνα
-    # Συνήθως υπάρχει endpoint τύπου /players/statistics?game=...
-    data = safe_get("/players/statistics", {"game": game_id})
-    if "error" in data:
-        # Εναλλακτικά, δοκιμάζουμε /games/boxscore
-        data = safe_get(f"/games/{game_id}/boxscore")
-
+    # Χρησιμοποιούμε το nba-player-stats με game parameter
+    data = safe_get("/nba-player-stats", {"gameid": game_id})
     if "error" in data:
         return jsonify(data), 500
 
-    players_list = data.get("response") or data.get("data") or data.get("results") or []
+    players_list = data.get("response") or data.get("data") or data.get("results") or data or []
+    if isinstance(players_list, dict):
+        players_list = [players_list]
+    if not isinstance(players_list, list):
+        players_list = []
+
     players = []
     for p in players_list:
+        if not isinstance(p, dict):
+            continue
         players.append({
-            "player_id": p.get("player", {}).get("id") if isinstance(p.get("player"), dict) else p.get("playerId"),
-            "name": f"{p.get('player', {}).get('firstname', '')} {p.get('player', {}).get('lastname', '')}" if isinstance(p.get("player"), dict) else p.get("playerName", ""),
-            "team": (p.get("team", {}) or {}).get("name") or p.get("teamName", ""),
-            "pts": p.get("points") or p.get("pts"),
-            "reb": p.get("rebounds") or p.get("reb"),
-            "ast": p.get("assists") or p.get("ast"),
-            "stl": p.get("steals") or p.get("stl"),
-            "blk": p.get("blocks") or p.get("blk"),
-            "min": p.get("minutes") or p.get("min")
+            "player_id": p.get("playerId") or p.get("id") or p.get("player_id"),
+            "name": f"{p.get('firstName', '')} {p.get('lastName', '')}".strip() or p.get("name", ""),
+            "team": p.get("teamName") or p.get("team_name") or (p.get("team") or {}).get("name", ""),
+            "pts": p.get("points") or p.get("pts") or p.get("PTS"),
+            "reb": p.get("rebounds") or p.get("reb") or p.get("REB"),
+            "ast": p.get("assists") or p.get("ast") or p.get("AST"),
+            "stl": p.get("steals") or p.get("stl") or p.get("STL"),
+            "blk": p.get("blocks") or p.get("blk") or p.get("BLK"),
+            "min": p.get("minutes") or p.get("min") or p.get("MIN")
         })
     return jsonify(players)
 
