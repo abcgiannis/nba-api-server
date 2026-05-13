@@ -6,33 +6,29 @@ import time
 app = Flask(__name__)
 CORS(app)
 
-# NBA Stats API headers (απαραίτητα για να μας απαντήσει το stats.nba.com)
-NBA_HEADERS = {
-    "Host": "stats.nba.com",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Accept": "application/json",
-    "Referer": "https://www.nba.com/",
-}
+# Balldontlie API (δωρεάν, δημόσιο, χωρίς κλειδί)
+BASE_URL = "https://www.balldontlie.io/api/v1"
 
-# Συνάρτηση για κλήσεις στο NBA API με επανάληψη σε περίπτωση αποτυχίας
-def nba_api_call(url, params=None, retries=2):
+def safe_get(url, params=None, retries=2):
+    """Κάνει GET request με επανάληψη σε περίπτωση αποτυχίας."""
     for i in range(retries):
         try:
-            resp = requests.get(url, params=params, headers=NBA_HEADERS, timeout=10)
+            resp = requests.get(url, params=params, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             else:
-                time.sleep(1)  # περίμενε λίγο πριν ξαναπροσπαθήσεις
+                time.sleep(0.5)
         except Exception as e:
             if i == retries - 1:
-                raise e
-            time.sleep(1)
-    return None
+                return {"error": str(e)}
+            time.sleep(0.5)
+    return {"error": "Max retries exceeded"}
 
 @app.route('/')
 def home():
     return jsonify({
         "status": "NBA API Server is running",
+        "data_source": "balldontlie.io (free, public)",
         "endpoints": [
             "/api/players?search=...",
             "/api/games?date=YYYY-MM-DD",
@@ -44,49 +40,39 @@ def home():
 @app.route('/api/players')
 def search_players():
     search = request.args.get('search', 'LeBron')
-    # NBA player search μέσω του stats.nba.com
-    url = "https://stats.nba.com/stats/playerindex"
-    params = {
-        "leagueID": "00",
-        "season": "2025-26",
-        "historical": "0",
-        "playerNameSearch": search
-    }
-    data = nba_api_call(url, params)
-    if not data:
-        return jsonify({"error": "Could not fetch players"}), 500
+    url = f"{BASE_URL}/players"
+    params = {"search": search, "per_page": 10}
+    data = safe_get(url, params)
+    if "error" in data:
+        return jsonify(data), 500
     players = []
-    for row in data.get("resultSets", [{}])[0].get("rowSet", []):
+    for p in data.get("data", []):
         players.append({
-            "id": row[0],
-            "first_name": row[1],
-            "last_name": row[2],
-            "team": row[7]
+            "id": p["id"],
+            "first_name": p["first_name"],
+            "last_name": p["last_name"],
+            "team": p.get("team", {}).get("full_name", "N/A")
         })
-    return jsonify(players[:10])  # επιστρέφουμε μέχρι 10 αποτελέσματα
+    return jsonify(players)
 
 @app.route('/api/games')
 def get_games():
     date = request.args.get('date', '2026-05-13')
-    # NBA schedule
-    url = "https://stats.nba.com/stats/scoreboardv3"
-    params = {
-        "gameDate": date,
-        "leagueID": "00"
-    }
-    data = nba_api_call(url, params)
-    if not data:
-        return jsonify({"error": "Could not fetch games"}), 500
+    url = f"{BASE_URL}/games"
+    params = {"dates[]": date, "per_page": 50}
+    data = safe_get(url, params)
+    if "error" in data:
+        return jsonify(data), 500
     games = []
-    for g in data.get("scoreboard", {}).get("games", []):
+    for g in data.get("data", []):
         games.append({
-            "id": g["gameId"],
-            "date": g["gameDateEst"],
-            "home_team": g["homeTeam"]["teamName"],
-            "away_team": g["awayTeam"]["teamName"],
-            "home_score": g.get("homeTeam", {}).get("score"),
-            "away_score": g.get("awayTeam", {}).get("score"),
-            "status": g.get("gameStatusText", "Scheduled")
+            "id": g["id"],
+            "date": g["date"],
+            "home_team": g["home_team"]["full_name"],
+            "away_team": g["visitor_team"]["full_name"],
+            "home_score": g.get("home_team_score"),
+            "away_score": g.get("visitor_team_score"),
+            "status": g["status"]
         })
     return jsonify(games)
 
@@ -95,27 +81,23 @@ def get_player_stats():
     player_id = request.args.get('player_id')
     if not player_id:
         return jsonify({"error": "player_id is required"}), 400
-    # Χρησιμοποιούμε το LastNGames για τα τελευταία 5 παιχνίδια
-    url = "https://stats.nba.com/stats/playergamelogs"
-    params = {
-        "playerId": player_id,
-        "season": "2025-26",
-        "measureType": "Base",
-        "perMode": "PerGame",
-        "lastNGames": "5"
-    }
-    data = nba_api_call(url, params)
-    if not data:
-        return jsonify({"error": "Could not fetch stats"}), 500
+    url = f"{BASE_URL}/stats"
+    params = {"player_ids[]": player_id, "per_page": 5}  # τελευταίοι 5 αγώνες
+    data = safe_get(url, params)
+    if "error" in data:
+        return jsonify(data), 500
     stats = []
-    rows = data.get("resultSets", [{}])[0].get("rowSet", [])
-    headers = data.get("resultSets", [{}])[0].get("headers", [])
-    for row in rows:
-        entry = {}
-        for i, h in enumerate(headers):
-            if h in ["GAME_DATE", "PTS", "REB", "AST", "STL", "BLK", "MIN"]:
-                entry[h.lower()] = row[i]
-        stats.append(entry)
+    for s in data.get("data", []):
+        stats.append({
+            "game_id": s["game"]["id"],
+            "date": s["game"]["date"],
+            "pts": s.get("pts"),
+            "reb": s.get("reb"),
+            "ast": s.get("ast"),
+            "stl": s.get("stl"),
+            "blk": s.get("blk"),
+            "min": s.get("min")
+        })
     return jsonify(stats)
 
 @app.route('/api/boxscore')
@@ -123,27 +105,26 @@ def get_boxscore():
     game_id = request.args.get('game_id')
     if not game_id:
         return jsonify({"error": "game_id is required"}), 400
-    url = "https://stats.nba.com/stats/boxscoretraditionalv3"
-    params = {
-        "gameId": game_id,
-        "leagueID": "00"
-    }
-    data = nba_api_call(url, params)
-    if not data:
-        return jsonify({"error": "Could not fetch boxscore"}), 500
+    url = f"{BASE_URL}/box_scores"
+    params = {"game_id": game_id}
+    data = safe_get(url, params)
+    if "error" in data:
+        return jsonify(data), 500
+    # Απλοποιούμε την απάντηση
     players = []
-    for team in data.get("boxScoreTraditional", {}).get("awayTeam", {}), data.get("boxScoreTraditional", {}).get("homeTeam", {}):
+    for team_key in ["home_team", "visitor_team"]:
+        team = data.get("data", {}).get(team_key, {})
         for p in team.get("players", []):
             players.append({
-                "player_id": p["personId"],
-                "name": f"{p['firstName']} {p['familyName']}",
-                "team": team["teamName"],
-                "pts": p["statistics"].get("points"),
-                "reb": p["statistics"].get("reboundsTotal"),
-                "ast": p["statistics"].get("assists"),
-                "stl": p["statistics"].get("steals"),
-                "blk": p["statistics"].get("blocks"),
-                "min": p["statistics"].get("minutes")
+                "player_id": p["id"],
+                "name": f"{p['first_name']} {p['last_name']}",
+                "team": team["full_name"],
+                "pts": p.get("pts"),
+                "reb": p.get("reb"),
+                "ast": p.get("ast"),
+                "stl": p.get("stl"),
+                "blk": p.get("blk"),
+                "min": p.get("min")
             })
     return jsonify(players)
 
