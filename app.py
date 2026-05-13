@@ -1,34 +1,34 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
-import time
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-# Balldontlie API (δωρεάν, δημόσιο, χωρίς κλειδί)
-BASE_URL = "https://www.balldontlie.io/api/v1"
+# Ρυθμίσεις για το δικό σου NBA API στο RapidAPI
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "9bd9db0ebfmsh2dcf7ca35b912e0p13458cjsn314474139704")
+BASE_URL = "https://free-nba.p.rapidapi.com"
+HEADERS = {
+    "x-rapidapi-host": "free-nba.p.rapidapi.com",
+    "x-rapidapi-key": RAPIDAPI_KEY
+}
 
-def safe_get(url, params=None, retries=2):
-    """Κάνει GET request με επανάληψη σε περίπτωση αποτυχίας."""
-    for i in range(retries):
-        try:
-            resp = requests.get(url, params=params, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                time.sleep(0.5)
-        except Exception as e:
-            if i == retries - 1:
-                return {"error": str(e)}
-            time.sleep(0.5)
-    return {"error": "Max retries exceeded"}
+def safe_get(endpoint, params=None):
+    try:
+        resp = requests.get(f"{BASE_URL}{endpoint}", headers=HEADERS, params=params, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            return {"error": f"Status {resp.status_code}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.route('/')
 def home():
     return jsonify({
         "status": "NBA API Server is running",
-        "data_source": "balldontlie.io (free, public)",
+        "data_source": "free-nba.p.rapidapi.com",
         "endpoints": [
             "/api/players?search=...",
             "/api/games?date=YYYY-MM-DD",
@@ -40,17 +40,16 @@ def home():
 @app.route('/api/players')
 def search_players():
     search = request.args.get('search', 'LeBron')
-    url = f"{BASE_URL}/players"
-    params = {"search": search, "per_page": 10}
-    data = safe_get(url, params)
+    # Το free-nba API συνήθως έχει endpoint /players
+    data = safe_get("/players", {"search": search, "per_page": 10})
     if "error" in data:
         return jsonify(data), 500
     players = []
     for p in data.get("data", []):
         players.append({
             "id": p["id"],
-            "first_name": p["first_name"],
-            "last_name": p["last_name"],
+            "first_name": p.get("first_name", ""),
+            "last_name": p.get("last_name", ""),
             "team": p.get("team", {}).get("full_name", "N/A")
         })
     return jsonify(players)
@@ -58,9 +57,8 @@ def search_players():
 @app.route('/api/games')
 def get_games():
     date = request.args.get('date', '2026-05-13')
-    url = f"{BASE_URL}/games"
-    params = {"dates[]": date, "per_page": 50}
-    data = safe_get(url, params)
+    # Το free-nba API συνήθως έχει endpoint /games με παράμετρο dates[]
+    data = safe_get("/games", {"dates[]": date, "per_page": 50})
     if "error" in data:
         return jsonify(data), 500
     games = []
@@ -81,9 +79,8 @@ def get_player_stats():
     player_id = request.args.get('player_id')
     if not player_id:
         return jsonify({"error": "player_id is required"}), 400
-    url = f"{BASE_URL}/stats"
-    params = {"player_ids[]": player_id, "per_page": 5}  # τελευταίοι 5 αγώνες
-    data = safe_get(url, params)
+    # Στατιστικά παίκτη από το /stats
+    data = safe_get("/stats", {"player_ids[]": player_id, "per_page": 5})
     if "error" in data:
         return jsonify(data), 500
     stats = []
@@ -105,12 +102,11 @@ def get_boxscore():
     game_id = request.args.get('game_id')
     if not game_id:
         return jsonify({"error": "game_id is required"}), 400
-    url = f"{BASE_URL}/box_scores"
-    params = {"game_id": game_id}
-    data = safe_get(url, params)
+    # Το free-nba API μπορεί να έχει το box score σε διαφορετικό endpoint.
+    # Δοκιμάζουμε το /box_scores ή το /games/{id}/stats
+    data = safe_get("/box_scores", {"game_id": game_id})
     if "error" in data:
         return jsonify(data), 500
-    # Απλοποιούμε την απάντηση
     players = []
     for team_key in ["home_team", "visitor_team"]:
         team = data.get("data", {}).get(team_key, {})
